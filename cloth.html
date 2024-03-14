@@ -1,0 +1,465 @@
+<!-- Licensed under a BSD license. See license.html for license -->
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>Three.js - Load .OBJ and .MTL file</title>
+    <style>
+    html, body {
+        margin: 0;
+        height: 100%;
+    }
+    #c {
+        width: 100%;
+        height: 100%;
+        display: block;
+    }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+  </body>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./build/three.module.js",
+    "three/addons/": "./examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
+import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+
+function main() {
+
+	const canvas = document.querySelector( '#c' );
+	const renderer = new THREE.WebGLRenderer( { antialias: true, canvas } );
+
+	let params = 
+	{
+		eta: 1.46,
+		kd: 0.3,
+		gamma_s: THREE.MathUtils.degToRad( 12 ),
+		gamma_v: THREE.MathUtils.degToRad( 24 ),
+		albedo_coeff: 0.3,
+		uvScaler: 20,
+		lightIntensity: 10
+	};
+
+	const gui = new GUI();
+
+	const fov = 45;
+	const aspect = 2; // the canvas default
+	const near = 0.1;
+	const far = 100;
+	const camera = new THREE.PerspectiveCamera( fov, aspect, near, far );
+	camera.position.set( 0, 10, 20 );
+
+	const controls = new OrbitControls( camera, canvas );
+	controls.target.set( 0, 5, 0 );
+	controls.update();
+
+	const scene = new THREE.Scene();
+	scene.background = new THREE.Color( 'black' );
+
+	{
+
+		const planeSize = 40;
+
+		const loader = new THREE.TextureLoader();
+		const texture = loader.load( 'manual/examples/resources/images/checker.png' );
+		texture.colorSpace = THREE.SRGBColorSpace;
+		texture.wrapS = THREE.RepeatWrapping;
+		texture.wrapT = THREE.RepeatWrapping;
+		texture.magFilter = THREE.NearestFilter;
+		const repeats = planeSize / 2;
+		texture.repeat.set( repeats, repeats );
+
+		const planeGeo = new THREE.PlaneGeometry( planeSize, planeSize );
+		const planeMat = new THREE.MeshPhongMaterial( {
+			map: texture,
+			side: THREE.DoubleSide,
+		} );
+		const mesh = new THREE.Mesh( planeGeo, planeMat );
+		mesh.rotation.x = Math.PI * - .5;
+		scene.add( mesh );
+
+	}
+
+	{
+
+		const skyColor = 0xB1E1FF; // light blue
+		const groundColor = 0xB97A20; // brownish orange
+		const intensity = 3;
+		const light = new THREE.HemisphereLight( skyColor, groundColor, intensity );
+		scene.add( light );
+
+	}
+
+	{
+
+		const color = 0xFFFFFF;
+		const intensity = 3;
+		const light = new THREE.DirectionalLight( color, intensity );
+		light.position.set( 5, 10, 2 );
+		scene.add( light );
+		scene.add( light.target );
+
+	}
+
+	{
+		const geometry = new THREE.SphereGeometry( 2, 32, 32 ); 
+		const redMat = new THREE.MeshBasicMaterial( { color: 'rgb(255,0,0)'} ); 
+		const greenMat = new THREE.MeshBasicMaterial( { color: 'rgb(0, 255,0)'} ); 
+		const blueMat = new THREE.MeshBasicMaterial( { color: 'rgb(0,0,255)'} ); 
+		const sphereX = new THREE.Mesh( geometry, redMat );
+		const sphereY = new THREE.Mesh( geometry, greenMat );
+		const sphereZ = new THREE.Mesh( geometry, blueMat );
+		sphereX.position.set( 20, 0, 0 );
+		sphereY.position.set( 0, 20, 0 );
+		sphereZ.position.set( 0, 0, 20 );
+		scene.add( sphereX );
+		scene.add( sphereY );
+		scene.add( sphereZ );
+	}
+
+	{
+		// builtin variables
+		// https://threejs.org/docs/index.html#api/en/renderers/webgl/WebGLProgram
+		const vertString = `
+		#ifdef USE_TANGENT
+			attribute vec4 tangent;
+		#endif
+
+		varying highp vec2 vTextureCoord;
+		varying highp vec3 vFragPos;
+		varying highp vec3 vNormal;
+
+		uniform float uvScaler;
+
+		void main()
+		{
+			gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+			vTextureCoord = uv * uvScaler;
+			vFragPos = (modelMatrix * vec4( position, 1.0 )).xyz;
+			vNormal = (transpose(viewMatrix) * vec4((normalMatrix * normal),1.0)).xyz;
+
+		}
+		`
+		;
+
+		const fragString = 
+		`
+		float PI = 3.14159265359;
+		const float gamma = 2.2;
+
+		float int_ior = 1.0f;
+		float ext_ior = 1.5f;
+
+		varying highp vec3 vFragPos;  
+		varying highp vec3 vNormal;  
+		varying highp vec2 vTextureCoord;
+
+		uniform sampler2D _tex;
+		uniform sampler2D normalMap;
+		uniform sampler2D tangentMap;
+
+		uniform float eta;
+		uniform float kd;
+		uniform float gamma_s;
+		uniform float gamma_v;
+		uniform float albedo_coeff;
+
+		uniform vec3 lightDirection;
+		uniform vec3 lightIntensity;
+
+		mat3 get_TBN()
+		{
+			vec3 Q1  = dFdx(vFragPos);
+			vec3 Q2  = dFdy(vFragPos);
+			vec2 st1 = dFdx(vTextureCoord);
+			vec2 st2 = dFdy(vTextureCoord);
+
+			vec3 N   = normalize(vNormal);
+			vec3 T  = normalize(Q1*st2.t - Q2*st1.t);
+			vec3 B  = -normalize(cross(N, T));
+			mat3 TBN = mat3(T, B, N);
+
+			return TBN;
+		}
+
+
+		mat3 get_inv_TBN()
+		{
+			mat3 inv_TBN = transpose(get_TBN());
+			return inv_TBN;
+		}
+
+		// gaussian
+		float normalized_gaussian(float theta, float beta) {
+			return exp(-theta * theta / (2.0f * beta * beta)) / (sqrt(2.0f * PI )* beta); 
+		}
+
+		float Ashikhmin_unit_height_gaussian(float phi)
+		{
+			float sigma = 0.3490659;    // standard deviation, 20deg to radian
+			return normalized_gaussian(phi, sigma);
+		}
+		
+		float cos_theta(vec3 v)
+		{
+			return sqrt(1.0f - v.x * v.x);
+		}
+
+		float cos_phi(vec3 v)
+		{
+			vec3 projected_v = normalize(vec3(0, v.y, v.z));
+			return projected_v.z;
+		}
+
+		float cos_psi(vec3 v)
+		{
+			vec3 projected_v = normalize(vec3(v.x, 0, v.z));
+			return projected_v.z;
+		}
+
+		float fresnelSchlick(float cosTheta, float eta1, float eta2)
+		{
+			float tmp = (eta1-eta2)/(eta1+eta2);
+			float F0 = tmp*tmp;
+			return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+		}
+
+		float shadowing(float cosPhiI, float cosPhiO, float phi_d) {
+			float m_i = max(cosPhiI, 0.0);
+			float m_o = max(cosPhiO, 0.0);
+			// float u = u_gaussian(phi_d);
+			float u = Ashikhmin_unit_height_gaussian(phi_d);
+			float correlated = min(m_i, m_o);
+			float uncorrelated = m_i * m_o;
+			return mix(uncorrelated, correlated, u);
+		}
+
+
+		// parameters using vector in local shading frame
+		vec3 brdf(vec3 wi, vec3 wo)
+		{
+			vec3 wh = normalize(wi + wo);
+			float cos_theta_i = cos_theta(wi);
+			float cos_theta_o = cos_theta(wo);
+			float cos_theta_h = cos_theta(wh);
+
+			float theta_h = acos(cos_theta_h);
+			
+			vec3 wi_on_normal_plane = normalize(vec3(0, wi.y, wi.z));
+			vec3 wo_on_normal_plane = normalize(vec3(0, wo.y, wo.z));
+			float cos_phi_d = dot(wi_on_normal_plane, wo_on_normal_plane);
+			// maybe need to clamp cos_phi_d to (-1, 1) to avoid numerical issue
+			float cos_phi_d_half = sqrt((cos_phi_d+1.0f) * 0.5f);
+		
+			// surface reflectance
+			float fresnel_reflect_coeff = fresnelSchlick(cos_theta_i, eta, int_ior);
+			float gaussian_reflect = normalized_gaussian(theta_h, gamma_s);
+			vec3 f_r_s = vec3(1,1,1) * fresnel_reflect_coeff * cos_phi_d_half * gaussian_reflect;
+
+			// compute vol scatter
+			float fresnel_refract_coeff_1 = 1.0f - fresnel_reflect_coeff;
+			float fresnel_refract_coeff_total = fresnel_refract_coeff_1 * fresnel_refract_coeff_1;
+			float gaussian_refract = normalized_gaussian(theta_h, gamma_v);
+			float vol_scatter_nominator = (1.0f - kd) * gaussian_refract + kd;
+			float vol_scatter_denom = cos_theta_i + cos_theta_o;
+			vec3 albedo = texture(_tex, vTextureCoord).rgb;
+
+			vec3 f_r_v = fresnel_refract_coeff_total * albedo_coeff *  albedo * vol_scatter_nominator / vol_scatter_denom;
+
+			vec3 result = f_r_s + f_r_v;
+			// vec3 result = f_r_v;
+			// vec3 result = f_r_s ;
+
+			float cos_phi_i = cos_phi(wi);
+			float cos_phi_o = cos_phi(wo);
+			float phi_d = acos(cos_phi_d);
+			float shadow = shadowing(cos_phi_i, cos_phi_o, phi_d);
+			result *= shadow;
+
+			float cos_psi_i = cos_psi(wi);
+			float cos_psi_o = cos_psi(wo);
+			vec3 wi_on_tangent_normal_plane = normalize(vec3(wi.x, 0, wi.z));
+			vec3 wo_on_tangent_normal_plane = normalize(vec3(wo.x, 0, wo.z));
+			float cos_psi_d = dot(wi_on_tangent_normal_plane, wo_on_tangent_normal_plane);
+			float psi_d = acos(cos_psi_d);
+			float reweight_coeff = shadowing(cos_psi_i, cos_psi_o, psi_d);
+			result *= reweight_coeff;
+
+			return result;
+		}
+
+
+		void main()
+		{
+			vec3 result;
+			// mat3 TBN = vTBN;
+			mat3 TBN = get_TBN();
+			mat3 inv_TBN = get_inv_TBN();
+
+			vec3 texture_normal = texture(normalMap, vTextureCoord).rgb;
+			texture_normal = normalize(texture_normal*2.0f - 1.0f);
+			vec3 texture_tangent = texture(tangentMap, vTextureCoord).rgb;
+			texture_tangent = normalize(texture_tangent*2.0f - 1.0f);
+
+			// vec3 texture_normal = vec3(0,0,1);
+			// vec3 texture_tangent = vec3(1,0,0);
+
+			vec3 normal_world = TBN * texture_normal;
+			vec3 tangent_world = TBN * texture_tangent;
+			vec3 bitangent_world = cross(normal_world,tangent_world);
+
+			vec3 wo_world = normalize(cameraPosition - vFragPos);
+			vec3 wo_local = vec3(dot(wo_world, tangent_world), dot(wo_world, bitangent_world), dot(wo_world, normal_world));
+			// vec3 wo_local = inv_TBN * wo_world;
+			
+			{
+				vec3 wi_world = normalize(lightDirection);
+				vec3 wi_local = vec3(dot(wi_world, tangent_world), dot(wi_world, bitangent_world), dot(wi_world, normal_world));
+				// vec3 wi_local = inv_TBN * wi_world;
+				
+				float light_frag_cos = wi_local.z;
+				if (light_frag_cos > 0.0f)
+				{
+					vec3 L_i = lightIntensity * light_frag_cos;
+					vec3 f_r = brdf(wi_local, wo_local);
+					result += L_i * f_r;
+				}
+			}
+
+			// // Reinhard 
+			// vec3 mapped = result / (result + vec3(1.0));
+			// // Gamma correction
+			// mapped = pow(mapped, vec3(1.0 / gamma));
+			// gl_FragColor = vec4(mapped, 1.0);
+
+			gl_FragColor = vec4(result, 1.0);
+
+			// gl_FragColor = vec4(tangent_world, 1.0);
+			
+			// gl_FragColor = vec4(vNormal, 1.0);
+
+		}
+		`;
+
+		const textureLoader = new THREE.TextureLoader();
+
+		// const albedo_texture = textureLoader.load( 'blue.png' );
+		const albedo_texture = textureLoader.load( 'yellow.png' );
+		albedo_texture.colorSpace = THREE.SRGBColorSpace;
+
+		const normal_texture = textureLoader.load( 'normal_map.png' );
+		normal_texture.wrapS = THREE.RepeatWrapping;
+		normal_texture.wrapT = THREE.RepeatWrapping;
+		// normal_texture.colorSpace = THREE.SRGBColorSpace;
+		const tangent_texture = textureLoader.load( 'tangent_map.png' );
+		tangent_texture.wrapS = THREE.RepeatWrapping;
+		tangent_texture.wrapT = THREE.RepeatWrapping;
+		// Declare the custom material we'll use
+		const customMaterial = new THREE.ShaderMaterial({
+			uniforms: {
+				_tex: { type: "t", value: albedo_texture },
+				normalMap: { type: "t", value: normal_texture },
+				tangentMap: { type: "t", value: tangent_texture },
+
+				eta: {value: params.eta},
+				kd: {value: params.kd},
+				gamma_s: {value: params.gamma_s},
+				gamma_v: {value: params.gamma_v},
+				albedo_coeff: {value: params.albedo_coeff},
+
+				uvScaler:{value: params.uvScaler},
+
+				lightDirection: {value: new THREE.Vector3( 0, 1, 1 ) },
+				lightIntensity: {value: new THREE.Vector3( 10, 10, 10 )},
+			},
+			vertexShader: vertString,
+			fragmentShader: fragString 
+		});
+		customMaterial.uniformsNeedUpdate = true;
+
+		gui.add(customMaterial.uniforms.eta, "value", 1.0, 1.8, 0.01).name("eta");
+		gui.add(customMaterial.uniforms.kd, "value", 0.01, 0.8, 0.01).name("kd");
+		gui.add(customMaterial.uniforms.albedo_coeff, "value", 0.01, 0.6, 0.01).name("albedo_coeff");
+		gui.add(params, 'gamma_s', 1, 60, 0.5).name("surface reflectance lobe width").onChange(function(input_value){
+			customMaterial.uniforms.gamma_s.value = THREE.MathUtils.degToRad( input_value );
+		});
+		gui.add(params, 'gamma_v', 1, 60, 0.5).name("volume scattering lobe width").onChange(function(input_value){
+			customMaterial.uniforms.gamma_v.value = THREE.MathUtils.degToRad( input_value );
+		});
+		gui.add(customMaterial.uniforms.uvScaler, "value", 0.001, 100, 0.001).name("uvScaler");
+		gui.add(params, "lightIntensity", 1, 30, 0.1).onChange(function(input_value)
+		{
+			customMaterial.uniforms.lightIntensity.value = new THREE.Vector3( input_value, input_value, input_value );
+		});
+		// We load the OBJ
+		const objLoader = new OBJLoader();
+		// objLoader.load( './tableCloth2.obj', function ( object ) 
+		objLoader.load( './cloth.obj', function ( object ) 
+		{
+			// Now we find each Mesh...
+			object.traverse( function ( child ) {
+				if ( child instanceof THREE.Mesh ) {
+
+					// ...and we replace the material with our custom one
+					child.material = customMaterial;
+				}
+			});
+			object.scale.setScalar(1);
+
+			scene.add( object );
+		}
+		);
+
+	}
+
+	function resizeRendererToDisplaySize( renderer ) {
+
+		const canvas = renderer.domElement;
+		const width = canvas.clientWidth;
+		const height = canvas.clientHeight;
+		const needResize = canvas.width !== width || canvas.height !== height;
+		if ( needResize ) {
+
+			renderer.setSize( width, height, false );
+
+		}
+
+		return needResize;
+
+	}
+
+	function render() {
+
+		if ( resizeRendererToDisplaySize( renderer ) ) {
+
+			const canvas = renderer.domElement;
+			camera.aspect = canvas.clientWidth / canvas.clientHeight;
+			camera.updateProjectionMatrix();
+
+		}
+
+		renderer.render( scene, camera );
+
+		requestAnimationFrame( render );
+
+	}
+
+	requestAnimationFrame( render );
+
+}
+
+main();
+</script>
+</html>
