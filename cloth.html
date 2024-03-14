@@ -356,8 +356,11 @@ function main() {
 		const textureLoader = new THREE.TextureLoader();
 
 		// const albedo_texture = textureLoader.load( 'blue.png' );
-		const albedo_texture = textureLoader.load( 'yellow.png' );
+		// const albedo_texture = textureLoader.load( 'yellow.png' );
+		const albedo_texture = textureLoader.load( 'out.png' );
 		albedo_texture.colorSpace = THREE.SRGBColorSpace;
+		albedo_texture.wrapS = THREE.RepeatWrapping;
+		albedo_texture.wrapT = THREE.RepeatWrapping;
 
 		const normal_texture = textureLoader.load( 'normal_map.png' );
 		normal_texture.wrapS = THREE.RepeatWrapping;
@@ -390,7 +393,7 @@ function main() {
 		customMaterial.uniformsNeedUpdate = true;
 
 		gui.add(customMaterial.uniforms.eta, "value", 1.0, 1.8, 0.01).name("eta");
-		gui.add(customMaterial.uniforms.kd, "value", 0.01, 0.8, 0.01).name("kd");
+		gui.add(customMaterial.uniforms.kd, "value", 0.01, 0.8, 0.01).name("Isotropic scattering coeff");
 		gui.add(customMaterial.uniforms.albedo_coeff, "value", 0.01, 0.6, 0.01).name("albedo_coeff");
 		gui.add(params, 'gamma_s', 1, 60, 0.5).name("surface reflectance lobe width").onChange(function(input_value){
 			customMaterial.uniforms.gamma_s.value = THREE.MathUtils.degToRad( input_value );
